@@ -97,9 +97,8 @@ class ParserCombinator
     end
   end
 
-  attr_accessor :parser_proc
-  attr_reader :parser_name
-  def initialize(status_handler=nil, name=nil &proc)
+  attr_reader :status_handler, :parser_name, :parser_proc
+  def initialize(status_handler=proc{nil}, name=nil, &proc)
     @status_handler = status_handler
     @parser_name = name
     @parser_proc = proc
@@ -107,10 +106,17 @@ class ParserCombinator
 
   def parse(items)
     result = @parser_proc.call(items)
-    if result.is_a?(Fail) && @status_handler
-      result.class.new(@status_handler.call(items, result.status))
-    else
+    case result
+    when Fail
+      if  @status_handler.call(items, result.status) != nil
+        result.class.new(@status_handler.call(items, result.status))
+      else
+        result
+      end
+    when Ok
       result
+    else
+      raise "parsed object is #{result.inspect}/#{result.class}"
     end
   end
 
@@ -122,6 +128,13 @@ class ParserCombinator
       self.class.new(status_handler, @parser_name, &parser_proc)
     else
       self
+    end
+  end
+
+  def onparse(&proc)
+    self.class.new(@status_handler, @parser_name) do |*args|
+      proc.call(*args)
+      @parser_proc.call(*args)
     end
   end
 
@@ -171,6 +184,8 @@ class ParserCombinator
         result
       when Ok
         continuation_proc.call(result.parsed).parse(result.rest)
+      else
+        raise "error"
       end
     }
   end
@@ -182,6 +197,8 @@ class ParserCombinator
         parser2.parse(i)
       when Ok
         result1
+      else
+        raise "error"
       end
     }
   end
@@ -197,6 +214,8 @@ class ParserCombinator
         end
       when Ok
         result1
+      else
+        raise "error"
       end
     }
   end
@@ -305,8 +324,12 @@ class ParserCombinator
       if @cache[key]
         return @cache[key]
       else
-        @cache[key] = self.new{}
-        @cache[key].parser_proc = proc.call(*args).parser_proc
+        status_handler = proc{ raise "this is never-called proc (status_handler)" }
+        parser_proc = proc{ raise "this is never-called proc (parser_proc)" }
+        @cache[key] = self.new(proc{|*args| status_handler.call(*args)}){|*args| parser_proc.call(*args)}
+        generated_parser = proc.call(*args)
+        parser_proc = generated_parser.parser_proc
+        status_handler = generated_parser.status_handler
         return @cache[key]
       end
     end
