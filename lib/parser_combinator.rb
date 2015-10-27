@@ -1,0 +1,314 @@
+require "parser_combinator/version"
+
+class ParserCombinator
+  ParserCombinatorError = Class.new(RuntimeError)
+
+  class Ok
+    attr_reader :parsed, :rest
+    def initialize(parsed, rest)
+      @parsed, @rest = parsed, rest
+    end
+  end
+
+  class Fail
+    attr_reader :status
+    def initialize(status=nil)
+      @status = status
+    end
+  end
+
+  class StandardFailStatus
+    attr_reader :message, :rest
+    def initialize(message, rest)
+      @message, @rest = message, rest
+    end
+  end
+
+  class Item
+    attr_reader :item, :tag
+
+    def initialize(item, tag)
+      @item, @tag = item, tag
+    end
+
+    def to_s
+      item.to_s
+    end
+
+    def inspect
+      "Item {item = #{item}, tag = #{tag}}"
+    end
+  end
+
+  class Items < Array
+    def head
+      self.first
+    end
+
+    def rest
+      self.drop(1)
+    end
+
+    def to_s
+      self.map(&:to_s).join
+    end
+
+    def inspect
+      "Items [#{self.map(&:inspect).join(",\n")}]"
+    end
+  end
+
+  class ParsedSeq
+    def initialize(seq)
+      @seq = seq
+    end
+
+    def to_a
+      @seq.map{|e| e[:entity]}
+    end
+
+    def to_h
+      @seq.select{|e| e[:name]}.map{|e| [e[:name], e[:entity]]}.to_h
+    end
+
+    def self.empty
+      new([])
+    end
+
+    def cons(entity, name)
+      self.class.new([{:entity => entity, :name => name}] + @seq)
+    end
+
+    def [](key)
+      case key
+      when Integer
+        if 0 <= key && key < @seq.length
+          @seq[key][:entity]
+        else
+          raise "out of bounds for ParsedSeq"
+        end
+      else
+        if e = @seq.find{|e| e[:name] == key}
+          e[:entity]
+        else
+          raise "key #{key} is not found in ParsedSeq"
+        end
+      end
+    end
+  end
+
+  attr_accessor :parser_proc
+  attr_reader :parser_name
+  def initialize(status_handler=nil, name=nil &proc)
+    @status_handler = status_handler
+    @parser_name = name
+    @parser_proc = proc
+  end
+
+  def parse(items)
+    result = @parser_proc.call(items)
+    if result.is_a?(Fail) && @status_handler
+      result.class.new(@status_handler.call(items, result.status))
+    else
+      result
+    end
+  end
+
+  def onfail(message=nil, ifnotyet=false, &status_handler)
+    raise "Only eihter message or fail_handler can be specified" if message && status_handler
+    if message
+      onfail{|items, status| status == nil ? StandardFailStatus.new(message, items) : status}
+    elsif status_handler
+      self.class.new(status_handler, @parser_name, &parser_proc)
+    else
+      self
+    end
+  end
+
+  def name(new_name)
+    self.class.new(@status_handler, new_name, &parser_proc)
+  end
+
+  def map(&mapping)
+    self >> proc{|x| self.class.ok(mapping.call(x))}
+  end
+
+  def >>(proc)
+    self.class.so_then(self, &proc)
+  end
+
+  def |(other)
+    self.class.either(self, other)
+  end
+
+  def ^(other)
+    self.class.either_fail(self, other)
+  end
+
+  def >(other)
+    self.class.discardl(self, other)
+  end
+
+  def <(other)
+    self.class.discardr(self, other)
+  end
+
+  # CoreCombinator
+  # --------------------
+
+  def self.ok(object)
+    new{|i| Ok.new(object, i)}
+  end
+
+  def self.fail(status=nil)
+    new{|i| Fail.new(status)}
+  end
+
+  def self.so_then(parser, &continuation_proc)
+    new{|i|
+      case result = parser.parse(i)
+      when Fail
+        result
+      when Ok
+        continuation_proc.call(result.parsed).parse(result.rest)
+      end
+    }
+  end
+
+  def self.either(parser1, parser2)
+    new{|i|
+      case result1 = parser1.parse(i)
+      when Fail
+        parser2.parse(i)
+      when Ok
+        result1
+      end
+    }
+  end
+
+  def self.either_fail(parser1, parser2)
+    new{|i|
+      case result1 = parser1.parse(i)
+      when Fail
+        if result1.status == nil
+          parser2.parse(i)
+        else
+          result1
+        end
+      when Ok
+        result1
+      end
+    }
+  end
+
+  def self.item
+    new{|i| i.size == 0 ? Fail.new : Ok.new(i.head, i.rest)}
+  end
+
+  def self.end_of_input
+    new{|i| i.size == 0 ? Ok.new(nil, i) : Fail.new}
+  end
+
+  def self.sat(&item_cond_proc)
+    item >> proc{|i|
+      item_cond_proc.call(i.item) ? ok(i) : fail
+    }
+  end
+
+  # UtilCombinator
+  # --------------------
+
+  def self.seq(*parsers)
+    if parsers.size == 0
+      ok(ParsedSeq.empty)
+    else
+      parsers.first >> proc{|x|
+        seq(*parsers.drop(1)) >> proc{|xs|
+          ok(xs.cons(x, parsers.first.parser_name))
+        }}
+    end
+  end
+
+  def self.opt(parser)
+    parser.map{|x| [x]} | ok([])
+  end
+
+  def self.many(parser, separator_parser=ok(nil))
+    many1(parser, separator_parser) | ok([])
+  end
+
+  def self.many1(parser, separator_parser=ok(nil))
+    parser >> proc{|x|
+       many(separator_parser > parser) >> proc{|xs|
+        ok([x] + xs)
+      }}
+  end
+
+  def self.opt_fail(parser)
+    parser.map{|x| [x]} ^ ok([])
+  end
+
+  def self.many_fail(parser, separator_parser=ok(nil))
+    many1_fail(parser, separator_parser) ^ ok([])
+  end
+
+  def self.many1_fail(parser, separator_parser=ok(nil))
+    parser >> proc{|x|
+      many_fail(separator_parser > parser) >> proc{|xs|
+        ok([x] + xs)
+      }}
+  end
+
+  def self.discardl(parser1, parser2)
+    parser1 >> proc{parser2}
+  end
+
+  def self.discardr(parser1, parser2)
+    parser1 >> proc{|x|
+      parser2 >> proc{
+        ok(x)
+      }}
+  end
+
+  def self.binopl(parser, op_proc_parser)
+    rest = proc{|a|
+      op_proc_parser >> proc{|f|
+        parser >> proc{|b|
+          rest.call(f.call(a, b))
+        }} | ok(a)
+    }
+    parser >> proc{|a|
+      rest.call(a)
+    }
+  end
+
+  def self.binopl_fail(parser, op_proc_parser)
+    rest = proc{|a|
+      op_proc_parser >> proc{|f|
+        parser >> proc{|b|
+          rest.call(f.call(a, b))
+        }} ^ ok(a)
+    }
+    parser >> proc{|a|
+      rest.call(a)
+    }
+  end
+
+  # Memorization DSL suport (for recursive grammer)
+  # --------------------
+
+  def self.parser(name, &proc)
+    @cache ||= {}
+    spcls = class << self; self end
+    spcls.send(:define_method, name) do |*args|
+      key = [name, args]
+      if @cache[key]
+        return @cache[key]
+      else
+        @cache[key] = self.new{}
+        @cache[key].parser_proc = proc.call(*args).parser_proc
+        return @cache[key]
+      end
+    end
+  end
+end
