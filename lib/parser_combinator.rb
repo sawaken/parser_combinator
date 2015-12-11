@@ -68,7 +68,7 @@ class ParserCombinator
     end
 
     def to_h
-      @seq.select{|e| e[:name]}.map{|e| [e[:name], e[:entity]]}.to_h
+      Hash[@seq.select{|e| e[:name]}.map{|e| [e[:name], e[:entity]]}]
     end
 
     def self.empty
