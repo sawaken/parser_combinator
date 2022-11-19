@@ -46,7 +46,7 @@ class ParserCombinator
     end
 
     def drop_while(&p)
-      Items.new(super(p))
+      Items.new(super(&p))
     end
 
     def flatten
@@ -70,7 +70,7 @@ class ParserCombinator
     end
 
     def take_while(&p)
-       Items.new(super(p))
+       Items.new(super(&p))
     end
 
     def uniq
