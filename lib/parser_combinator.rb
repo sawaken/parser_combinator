@@ -41,6 +41,42 @@ class ParserCombinator
   end
 
   class Items < Array
+    def drop(v)
+      Items.new(super(v))
+    end
+
+    def drop_while(&p)
+      Items.new(super(p))
+    end
+
+    def flatten
+      Items.new(super())
+    end
+
+    def slice(nth)
+      if nth.instance_of? Range then
+        Items.new(super(nth))
+      else
+        super(nth)
+      end
+    end
+
+    def slice(pos, len)
+      Items.new(super(pos, len))
+    end
+
+    def take(n)
+       Items.new(super(n))
+    end
+
+    def take_while(&p)
+       Items.new(super(p))
+    end
+
+    def uniq
+       Items.new(super())
+    end
+
     def head
       self.first
     end
